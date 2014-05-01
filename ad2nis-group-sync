@@ -1,0 +1,226 @@
+#!/usr/bin/env python2.6
+
+########################################################
+# The purpose of this script is to take a list of AD
+# groups, find its members, and ensure all the members
+# are in the equivalent NIS group in Linux.
+#
+# Author: Brandon Young
+# Date:   9-25-09
+########################################################
+
+import sys
+import os
+import ldap
+import nis
+import string
+import smtplib
+import subprocess
+from email.mime.text import MIMEText
+from time import strftime
+
+
+date = strftime("%Y%m%d")
+filename = "/tmp/group.%s" % date
+
+def main():
+	ldap_server_uri = "ldap://server.domain.name"
+	who = "cn=admin - lastname\, firstname,ou=it domain admin accounts,ou=it,dc=example,dc=org"
+	cred = "#T1lizes"
+	group_maps = {
+                "ad group":"nisgroup",
+                "proteomics":"proteomics"
+}
+	missing_group_mems = {}
+	
+	try:
+    		l = ldap.initialize(ldap_server_uri)
+    		l.simple_bind_s(who, cred)
+    		l.set_option(ldap.OPT_REFERRALS, 0)
+  	except ldap.LDAPError, error_message:
+    		print "Couldn't Connect. %s " % error_message
+
+	for k in group_maps.keys():
+		adgroup = k
+		nisgroup = group_maps[k]
+		try:
+	    		adgroupmembers = ldap_group_search(l, adgroup)
+		except:
+			print "There was a problem determining AD group members for group %s" % adgroup
+			break
+
+		try:
+			nisgroupmembers = nis_group_search(nisgroup)
+		except:
+			print "There was a problem determining NIS group members for group %s" % nisgroup
+			break
+
+		missing_members = []
+		missing_members = filter(lambda x: (x in adgroupmembers and not (x in nisgroupmembers)), adgroupmembers+nisgroupmembers)
+		if (len(missing_members) > 0):
+			missing_group_mems[nisgroup] = append_string(missing_members)
+
+	if (len(missing_group_mems) > 0):
+		try:
+			copy_file('root@linux01:/etc/group','/tmp/group.tmp')
+		except:
+			print "Unable to copy remote file to local disk"
+			sys.exit()
+
+		file_update(missing_group_mems)
+
+		try:
+			copy_file(filename,"root@linux01:/tmp/")
+		except:
+			print "Unable to copy new file to remote disk"
+			sys.exit()
+
+		message =  "\nThe following NIS groups had the listed members added:\n"
+		for m in missing_group_mems.keys():
+			groupname = m
+			missing = missing_group_mems[m]
+			message += "NIS group \'%s\': %s\n" % (groupname, missing.lstrip(','))
+		message += "\n\nPlease look over %s on linux01 to verify things look good." % filename
+		message += "\nIf it looks good, then perform the following steps on linux01:\n\t1.  Backup /etc/group\n\t2.  cp %s /etc/group\n\t3.  /root/bin/nis-sync.sh" % filename
+	#	print message
+		send_email(message)
+		remove_file(filename)
+		remove_file("/tmp/group.tmp")
+  	l.unbind()
+
+def copy_file(src_file,dst_file):
+	cmd = 'scp %s %s' % (src_file,dst_file)
+	subprocess.call(cmd, shell=True)
+
+def remove_file(fn):
+	cmd = 'rm -f %s' % fn
+        subprocess.call(cmd, shell=True)
+
+def send_email(msg_body):
+	COMMASPACE = ', '
+	me = "root@nis01.example.org"
+	admins = ["admin@example.org","you@example.org"]
+	msg = MIMEText(msg_body)
+	msg['Subject'] = 'New Members Added to Groups in NIS'
+	msg['From'] = me
+	msg['To'] = COMMASPACE.join(admins)
+	msg.preamble = 'New Members Added to Groups NIS'
+	s = smtplib.SMTP('localhost')
+	s.sendmail(me, admins, msg.as_string())
+	s.quit()
+
+def file_update(mems_2_append):
+	infile = "/tmp/group.tmp"
+	outfile = filename
+	lines = []
+	with open(infile) as in_file:
+		lines = in_file.readlines()
+	for m in mems_2_append.keys():
+		group = m
+		missing = mems_2_append[m]
+		for line in range(len(lines)):
+			newline = ""
+			grp = string.split(lines[line],":")[0]
+			if grp == group:
+				oldline = lines[line].rstrip("\n")
+				newline = oldline + missing + "\n"
+				newline = newline.replace(' ','')
+				del lines[line]
+				lines.insert(line, newline)
+	with open(outfile,"w") as out_file:
+		out_file.writelines(lines)
+
+def append_string(user_list):
+	users = ""
+	for person in user_list:
+		users += "," + person
+	return users.replace(' ','')
+
+def is_nis_user(uid):
+	key = uid
+	mapname = "passwd.byname"
+	nis_domain = "example"
+
+	try:
+                nis_entry = nis.match(key,mapname,nis_domain)
+		return 1
+        except nis.error, e:
+		return 0
+
+def nis_group_search(group):
+	key = group
+	mapname = "group.byname"
+	nis_domain = "example"
+	
+	try:
+		nis_group_entry = nis.match(key,mapname,nis_domain)
+		nis_group_members = string.split(string.split(nis_group_entry,":")[3],",")
+		return sorted(nis_group_members)
+	except nis.error, e:
+		return 0
+
+def convert(l, mems):
+	members = []
+   	for z in range(len(mems)):
+  		base = mems[z] 
+  		scope = ldap.SCOPE_SUBTREE
+  		filter = "(Objectclass=user)"
+  		retrieve_attributes = [ 'sAMAccountName' ]
+   		result_set = []
+  		timeout = 0
+       		result_id = l.search(base, scope, filter, retrieve_attributes)
+		try:
+                        result_id = l.search(base, scope, filter, retrieve_attributes)
+                        while 1:
+                                result_type, result_data = l.result(result_id, timeout)
+                                if (result_data == []):
+                                        break
+                                else:
+                                        if result_type == ldap.RES_SEARCH_ENTRY:
+                                                result_set.append(result_data)
+                        if len(result_set) == 0:
+                                pass
+
+                        for i in range(len(result_set)):
+                                for entry in result_set[i]:
+                                        mem = entry[1]['sAMAccountName']
+					user = mem[0].lower()
+					if is_nis_user(user):
+                                        	members.append(user)
+                except ldap.LDAPError, error_message:
+                        print error_message
+                        return
+	return members
+
+def ldap_group_search(l, group):
+  	base = "dc=example,dc=org"
+  	scope = ldap.SCOPE_SUBTREE
+  	filter = "cn=" + group
+  	retrieve_attributes = [ 'member' ]
+  	result_set = []
+  	ad_group_members = []
+  	timeout = 0
+  	try:
+        	result_id = l.search(base, scope, filter, retrieve_attributes)
+        	while 1:
+          		result_type, result_data = l.result(result_id, timeout)
+          		if (result_data == []):
+            			break
+          		else:
+            			if result_type == ldap.RES_SEARCH_ENTRY:
+                			result_set.append(result_data)  
+        	if len(result_set) == 0:
+            		return 0
+
+        	for i in range(len(result_set)):
+          		for entry in result_set[i]:                 
+	  			mems = entry[1]['member']
+				ad_group_members = convert(l,mems)
+  	except ldap.LDAPError, error_message:
+        	print error_message
+		return 0
+	
+ 	return sorted(ad_group_members)
+
+if __name__=='__main__':
+    main()
