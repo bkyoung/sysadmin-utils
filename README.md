@@ -1,3 +1,7 @@
+atlas-uploader.py
+=================
+This cli utility was an experiment with 12-factor inspired ideas.  The purpose of the utility is to automate the uploading of a newly built vagrant box.  The was written before packer acquired such a capability itself, when I had an automation pipeline to build, upload, and publish these vagrant boxes unattended.
+
 ad2nis-group-sync
 =================
 
