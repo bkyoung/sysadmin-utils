@@ -1,3 +1,7 @@
+nando-wave2.py
+==============
+This cli utility takes a URL as an argument, and provided this URL is an RSS feed, will parse the RSS XML for enclosures of type image, download them to the specified output directory, and finally write out the RSS XML.  There is definitely some tight coupling to the particular system this tool was intended to interact with, but these are easily generalizable if needed.
+
 atlas-uploader.py
 =================
 This cli utility was an experiment with 12-factor inspired ideas.  The purpose of the utility is to automate the uploading of a newly built vagrant box.  The was written before packer acquired such a capability itself, when I had an automation pipeline to build, upload, and publish these vagrant boxes unattended.
